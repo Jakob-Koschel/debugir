@@ -18,6 +18,8 @@
 
 #include "llvm/Pass.h"
 
+#include "ABIList.h"
+
 namespace llvm {
 
 class DebugIR : public llvm::ModulePass {
@@ -91,6 +93,8 @@ private:
   /// closed by this function after writing. If no fd is specified, a new file
   /// is opened, written, and closed.
   void writeDebugBitcode(const llvm::Module *M, int *fd = nullptr);
+
+	ABIList DebugIRABIList;
 };
 
 ModulePass *createDebugIRPass(bool HideDebugIntrinsics,

@@ -36,6 +36,7 @@
 
 #include "llvm/Transforms/IPO/PassManagerBuilder.h" // RegisterStandardPasses
 #include "llvm/IR/LegacyPassManager.h"
+#include <llvm/Support/CommandLine.h>
 
 #include <string>
 
@@ -48,7 +49,11 @@ using namespace llvm;
 
 #define DEBUG_TYPE "debug-ir"
 
-#define DEBUG_FUNCTION "unoptimize_kprobe"
+static cl::opt<std::string> ClABIListFile(
+    "debugir-abilist",
+    cl::desc("File listing native ABI functions and how the pass treats them"),
+		cl::init("debugir-abilist.txt"),
+    cl::Hidden);
 
 namespace {
 
@@ -67,11 +72,15 @@ class ValueToLineMap : public AssemblyAnnotationWriter {
 public:
   /// Prints Module to a null buffer in order to build the map of Value pointers
   /// to line numbers.
-  ValueToLineMap(const Module *M) {
+  ValueToLineMap(const Module *M, ABIList *DebugIRABIList) {
     raw_null_ostream ThrowAway;
-    Function *F = M->getFunction(DEBUG_FUNCTION);
-    if (F)
-      F->print(ThrowAway, this);
+    for (const Function &F : *M) {
+      if (!DebugIRABIList->isIn(F, "debugir"))
+        continue;
+      if (F.isDeclaration())
+        continue;
+      F.print(ThrowAway, this);
+    }
     // M->print(ThrowAway, this);
   }
 
@@ -140,11 +149,15 @@ class DIUpdater : public InstVisitor<DIUpdater> {
   ValueMap<const Function *, DISubprogram *> SubprogramDescriptors;
   DenseMap<const Type *, DIType *> TypeDescriptors;
 
+	ABIList *DebugIRABIList;
+
 public:
   DIUpdater(Module &M, StringRef Filename = StringRef(),
-            StringRef Directory = StringRef(), const Module *DisplayM = nullptr,
+            StringRef Directory = StringRef(),
+						ABIList *DebugIRABIList = nullptr, const Module *DisplayM = nullptr,
             const ValueToValueMapTy *VMap = nullptr)
-      : Builder(M), Layout(&M), LineTable(DisplayM ? DisplayM : &M), VMap(VMap),
+      : Builder(M), Layout(&M), LineTable(DisplayM ? DisplayM : &M, DebugIRABIList),
+				DebugIRABIList(DebugIRABIList), VMap(VMap),
         Finder(), Filename(Filename), Directory(Directory), FileNode(nullptr),
         LexicalBlockFileNode(nullptr), M(M) {
 
@@ -166,7 +179,7 @@ public:
   }
 
   void visitFunction(Function &F) {
-    if (!F.getName().equals(DEBUG_FUNCTION))
+    if (!DebugIRABIList->isIn(F, "debugir"))
       return;
     if (F.isDeclaration() || findDISubprogram(&F))
       return;
@@ -233,7 +246,8 @@ public:
   }
 
 void visitInstruction(Instruction &I) {
-    if (!I.getFunction()->getName().equals(DEBUG_FUNCTION))
+    Function &F = *I.getFunction();
+    if (!DebugIRABIList->isIn(F, "debugir"))
       return;
 
     DebugLoc Loc(I.getDebugLoc());
@@ -593,9 +607,13 @@ void DebugIR::writeDebugBitcode(const Module *M, int *fd) {
     Out.reset(new raw_fd_ostream(*fd, true));
   }
 
-  Function *F = M->getFunction(DEBUG_FUNCTION);
-  if (F)
-    F->print(*Out, nullptr);
+  for (const Function &F : *M) {
+    if (!DebugIRABIList.isIn(F, "debugir"))
+      continue;
+    if (F.isDeclaration())
+      continue;
+    F.print(*Out, nullptr);
+  }
   // M->print(*Out, nullptr);
   Out->close();
 }
@@ -608,7 +626,7 @@ void DebugIR::createDebugInfo(Module &M, std::unique_ptr<Module> &DisplayM) {
   {
     // DIUpdater is in its own scope so that it's destructor, and hence
     // DIBuilder::finalize() gets called. Without that there's dangling stuff.
-    DIUpdater R(M, Filename, Directory, DisplayM.get(), VMap.get());
+    DIUpdater R(M, Filename, Directory, &DebugIRABIList, DisplayM.get(), VMap.get());
   }
 
   auto DIVersionKey = "Debug Info Version";
@@ -643,6 +661,10 @@ bool DebugIR::isMissingPath() { return Filename.empty() || Directory.empty(); }
 bool DebugIR::runOnModule(Module &M) {
   errs() << "[DebugIR] start\n";
   std::unique_ptr<int> fd;
+
+  std::vector<std::string> AllABIListFiles{ ClABIListFile };
+  DebugIRABIList.set(
+      SpecialCaseList::createOrDie(AllABIListFiles, *vfs::getRealFileSystem()));
 
   if (isMissingPath() && !getSourceInfo(M)) {
     if (!WriteSourceToDisk) {
