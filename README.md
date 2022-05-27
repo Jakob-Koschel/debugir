@@ -1,11 +1,16 @@
 # DebugIR
 
-```
-llvm-project/build/bin/clang -flto -c -o hello.o hello.c
-llvm-project/build/bin/opt -debugir hello.o -o hello.debugir.o
-clang-12 -flegacy-pass-manager -fuse-ld=lld -flto=full hello.debugir.o -o hello
+## How to use
 
-llvm-project/build/bin/clang -flegacy-pass-manager -fuse-ld=lld -flto=full -o hello hello.c
+Create a `debugir-abilist.txt` with e.g.:
+
+```
+fun:unoptimized_kprobe=debugir
+```
+to only add debug info for only that specific function.
+
+## Misc
+```
 llvm-dwarfdump-12 --debug-line hello
 objdump -d hello
 cat ld-temp.debug-ll
